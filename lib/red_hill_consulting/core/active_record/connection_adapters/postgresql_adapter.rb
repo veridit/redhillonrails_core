@@ -17,33 +17,42 @@ module RedHillConsulting::Core::ActiveRecord::ConnectionAdapters
     def add_index(table_name, column_name, options = {})
       column_names = Array(column_name)
       index_name   = index_name(table_name, :column => column_names)
+      index_condition = nil
 
       if Hash === options # legacy support, since this param was a string
         index_type = options[:unique] ? "UNIQUE" : ""
         index_name = options[:name] || index_name
+        index_condition = options[:condition] 
       else
         index_type = options
       end
 
       quoted_column_names = column_names.map { |e| options[:case_sensitive] == false && e.to_s !~ /_id$/ ? "LOWER(#{quote_column_name(e)})" : quote_column_name(e) }
+      index_where = if index_condition then
+                      "WHERE #{index_condition}"
+                    end
 
-      execute "CREATE #{index_type} INDEX #{quote_column_name(index_name)} ON #{table_name} (#{quoted_column_names.join(", ")})"
+      execute "CREATE #{index_type} INDEX #{quote_column_name(index_name)} ON #{table_name} (#{quoted_column_names.join(", ")}) #{index_where}"
     end
 
     def indexes_with_redhillonrails_core(table_name, name = nil)
       indexes = indexes_without_redhillonrails_core(table_name, name)
+      # i.indexprs IS NOT NULL selects all indexes that have an index expression, 
+      # such as lower(column)
+      # i.indpred IS NOT NULL selects all indexes that have a with expression
+      # that must be fulfilled, a predicate.
       result = query(<<-SQL, name)
         SELECT c2.relname, i.indisunique, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true)
           FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
          WHERE c.relname = '#{table_name}'
            AND c.oid = i.indrelid AND i.indexrelid = c2.oid
            AND i.indisprimary = 'f'
-           AND i.indexprs IS NOT NULL
+           AND ( i.indexprs IS NOT NULL OR i.indpred IS NOT NULL )
          ORDER BY 1
       SQL
 
       result.each do |row|
-        if row[2]=~ /\((.*LOWER\([^:]+(::text)?\).*)\)$/i
+        if row[2]=~ /using [^ ]+ \((.*LOWER\([^:]*::text\).*)\)/i then
           indexes.delete_if { |index| index.name == row[0] }
           column_names = $1.split(", ").map do |name|
             name = $1 if name =~ /^LOWER\(([^:]+)(::text)?\)$/i
@@ -53,6 +62,24 @@ module RedHillConsulting::Core::ActiveRecord::ConnectionAdapters
           index = ActiveRecord::ConnectionAdapters::IndexDefinition.new(table_name, row[0], row[1] == "t", column_names)
           index.case_sensitive = false
           indexes << index
+        end
+        case row[2] 
+        when /WHERE (([^ ]+) is null)$/i then
+          # There is a negative scope for this index, such that
+          # it is only used when some column is null.
+          index = indexes.select { |index| index.name == row[0] }.first
+          index.unique = false
+          index.condition = $1
+          # TODO: Store the condition such that schema_validations can build a proper :if clause for the validation.
+          # It is not possible to create a Proc here, because the bindings
+          # of the record is needed, therefore create a string that 
+          # will eval to the correct if expression
+          # index.if = "(not self.#{$2}.blank?)"
+        when /WHERE (.*)$/i then
+          # This column is ony valid when the where clause is true.
+          index = indexes.select { |index| index.name == row[0] }.first
+          index.condition = $1
+          index.unique = false
         end
       end
 
