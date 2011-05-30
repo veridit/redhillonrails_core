@@ -5,7 +5,7 @@ module RedHillConsulting::Core::ActiveRecord::ConnectionAdapters
 	  alias case_sensitive? case_sensitive
 
 	  def unique?
-	    !unique_scope.nil?
+	    !unique_scope.blank?
 	  end
 
 	  def required_on
