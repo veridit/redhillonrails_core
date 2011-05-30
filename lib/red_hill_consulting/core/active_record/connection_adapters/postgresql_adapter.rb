@@ -52,7 +52,8 @@ module RedHillConsulting::Core::ActiveRecord::ConnectionAdapters
       SQL
 
       result.each do |row|
-        if row[2]=~ /using [^ ]+ \((.*LOWER\([^:]*::text\).*)\)/i then
+        case row[2]
+        when /using [^ ]+ \((.*LOWER\([^:]*::text\).*)\)/i then
           indexes.delete_if { |index| index.name == row[0] }
           column_names = $1.split(", ").map do |name|
             name = $1 if name =~ /^LOWER\(([^:]+)(::text)?\)$/i
@@ -62,9 +63,7 @@ module RedHillConsulting::Core::ActiveRecord::ConnectionAdapters
           index = ActiveRecord::ConnectionAdapters::IndexDefinition.new(table_name, row[0], row[1] == "t", column_names)
           index.case_sensitive = false
           indexes << index
-        end
-        case row[2] 
-        when /WHERE (([^ ]+) is null)$/i then
+        when /USING [^ ]+ \(.+\) WHERE (([^ ]+) is null)$/i then
           # There is a negative scope for this index, such that
           # it is only used when some column is null.
           index = indexes.select { |index| index.name == row[0] }.first
